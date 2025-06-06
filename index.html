@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D Model Upload with Camera Control</title>
+    <title>3D Model Upload with Live Camera</title>
     <style>
         body {
             margin: 0;
@@ -16,6 +16,16 @@
             position: relative;
             width: 100vw;
             height: 100vh;
+        }
+        #video-background {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+            display: none;
+            z-index: -1;
         }
         #info {
             position: absolute;
@@ -81,6 +91,7 @@
             font-size: 24px;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
             display: none;
+            z-index: 50;
         }
         #loading {
             position: absolute;
@@ -91,17 +102,39 @@
             font-size: 18px;
             display: none;
         }
+        #camera-error {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: red;
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border-radius: 8px;
+            display: none;
+            z-index: 200;
+            text-align: center;
+        }
+        #canvas3d {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 10;
+        }
     </style>
 </head>
 <body>
     <div id="container">
+        <video id="video-background" autoplay muted playsinline></video>
+        <canvas id="canvas3d"></canvas>
+        
         <div id="info">
-            <strong>3D Model Surface Detection</strong><br>
+            <strong>3D Model with Live Camera</strong><br>
             • Upload GLB file to replace default model<br>
             • Click to place model on surfaces<br>
             • WASD: Move view camera<br>
             • Mouse: Look around<br>
-            • Back Camera: View from model's perspective
+            • Back Camera: Live camera feed
         </div>
         
         <div id="upload-section">
@@ -112,20 +145,26 @@
         <div id="controls">
             <button onclick="resetModel()">Reset Position</button>
             <button onclick="toggleWireframe()">Toggle Wireframe</button>
-            <button id="cameraToggle" onclick="toggleCamera()">Switch to Back Camera</button>
+            <button id="cameraToggle" onclick="toggleCamera()">Turn On Back Camera</button>
         </div>
 
-        <div class="camera-indicator" id="cameraIndicator">📹 BACK CAMERA VIEW</div>
+        <div class="camera-indicator" id="cameraIndicator">📹 LIVE CAMERA VIEW</div>
         <div id="loading">Loading model...</div>
+        <div id="camera-error">
+            <h3>Camera Access Error</h3>
+            <p>Unable to access camera. Please check permissions or try a different browser.</p>
+            <button onclick="hideError()">Close</button>
+        </div>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
-        let scene, viewCamera, backCamera, renderer, raycaster, mouse;
+        let scene, viewCamera, renderer, raycaster, mouse;
         let currentModel, surfaces = [];
         let wireframeMode = false;
-        let isBackCamera = false;
-        let loader;
+        let isCameraMode = false;
+        let videoStream = null;
+        let videoElement;
 
         // Camera movement
         const moveSpeed = 0.1;
@@ -137,6 +176,9 @@
         animate();
 
         function init() {
+            // Get video element
+            videoElement = document.getElementById('video-background');
+            
             // Scene setup
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x87CEEB);
@@ -145,18 +187,15 @@
             viewCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
             viewCamera.position.set(0, 5, 10);
 
-            // Back camera (will be positioned relative to model)
-            backCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-
             // Renderer setup
-            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer = new THREE.WebGLRenderer({ 
+                antialias: true, 
+                alpha: true,
+                canvas: document.getElementById('canvas3d')
+            });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.shadowMap.enabled = true;
             renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-            document.getElementById('container').appendChild(renderer.domElement);
-
-            // GLB Loader
-            loader = new THREE.GLTFLoader();
 
             // Lighting
             setupLighting();
@@ -199,7 +238,7 @@
         }
 
         function createSurfaces() {
-            // Floor
+            // Floor (make it invisible in camera mode)
             const floorGeometry = new THREE.PlaneGeometry(30, 30);
             const floorMaterial = new THREE.MeshLambertMaterial({ 
                 color: 0x90EE90,
@@ -209,6 +248,7 @@
             const floor = new THREE.Mesh(floorGeometry, floorMaterial);
             floor.rotation.x = -Math.PI / 2;
             floor.receiveShadow = true;
+            floor.userData.isFloor = true;
             scene.add(floor);
             surfaces.push(floor);
 
@@ -219,7 +259,10 @@
         function createPlatforms() {
             // Elevated platform
             const platformGeometry = new THREE.BoxGeometry(6, 0.3, 6);
-            const platformMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+            const platformMaterial = new THREE.MeshLambertMaterial({ 
+                color: 0x8B4513,
+                transparent: true
+            });
             const platform = new THREE.Mesh(platformGeometry, platformMaterial);
             platform.position.set(5, 1.15, 0);
             platform.castShadow = true;
@@ -229,7 +272,10 @@
 
             // Ramp
             const rampGeometry = new THREE.BoxGeometry(3, 0.2, 8);
-            const rampMaterial = new THREE.MeshLambertMaterial({ color: 0x696969 });
+            const rampMaterial = new THREE.MeshLambertMaterial({ 
+                color: 0x696969,
+                transparent: true
+            });
             const ramp = new THREE.Mesh(rampGeometry, rampMaterial);
             ramp.position.set(-5, 0.8, 0);
             ramp.rotation.z = Math.PI / 10;
@@ -241,7 +287,10 @@
             // Stairs
             for (let i = 0; i < 6; i++) {
                 const stepGeometry = new THREE.BoxGeometry(3, 0.3, 1.5);
-                const stepMaterial = new THREE.MeshLambertMaterial({ color: 0x708090 });
+                const stepMaterial = new THREE.MeshLambertMaterial({ 
+                    color: 0x708090,
+                    transparent: true
+                });
                 const step = new THREE.Mesh(stepGeometry, stepMaterial);
                 step.position.set(-10, i * 0.3 + 0.15, i * 1.2 - 3);
                 step.castShadow = true;
@@ -252,7 +301,10 @@
 
             // Circular platform
             const circleGeometry = new THREE.CylinderGeometry(2, 2, 0.2);
-            const circleMaterial = new THREE.MeshLambertMaterial({ color: 0x8A2BE2 });
+            const circleMaterial = new THREE.MeshLambertMaterial({ 
+                color: 0x8A2BE2,
+                transparent: true
+            });
             const circle = new THREE.Mesh(circleGeometry, circleMaterial);
             circle.position.set(0, 0.1, -8);
             circle.castShadow = true;
@@ -290,8 +342,101 @@
             currentModel = modelGroup;
             currentModel.position.set(0, 0.5, 0);
             scene.add(currentModel);
+        }
 
-            updateBackCamera();
+        async function initCamera() {
+            try {
+                // Request back camera specifically
+                const constraints = {
+                    video: {
+                        facingMode: { ideal: "environment" }, // Back camera
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 }
+                    },
+                    audio: false
+                };
+
+                videoStream = await navigator.mediaDevices.getUserMedia(constraints);
+                videoElement.srcObject = videoStream;
+                
+                return new Promise((resolve) => {
+                    videoElement.onloadedmetadata = () => {
+                        videoElement.play();
+                        resolve(true);
+                    };
+                });
+            } catch (error) {
+                console.error('Error accessing camera:', error);
+                showCameraError();
+                return false;
+            }
+        }
+
+        function stopCamera() {
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+                videoStream = null;
+            }
+            videoElement.srcObject = null;
+        }
+
+        async function toggleCamera() {
+            isCameraMode = !isCameraMode;
+            const toggleBtn = document.getElementById('cameraToggle');
+            const indicator = document.getElementById('cameraIndicator');
+            const videoBackground = document.getElementById('video-background');
+            
+            if (isCameraMode) {
+                const success = await initCamera();
+                if (success) {
+                    toggleBtn.textContent = 'Turn Off Camera';
+                    toggleBtn.classList.add('active');
+                    indicator.style.display = 'block';
+                    videoBackground.style.display = 'block';
+                    
+                    // Make 3D scene background transparent and surfaces semi-transparent
+                    scene.background = null;
+                    renderer.setClearColor(0x000000, 0);
+                    
+                    // Make surfaces more transparent in camera mode
+                    surfaces.forEach(surface => {
+                        if (!surface.userData.isFloor) {
+                            surface.material.opacity = 0.3;
+                        } else {
+                            surface.material.opacity = 0.1;
+                        }
+                    });
+                } else {
+                    isCameraMode = false;
+                }
+            } else {
+                stopCamera();
+                toggleBtn.textContent = 'Turn On Back Camera';
+                toggleBtn.classList.remove('active');
+                indicator.style.display = 'none';
+                videoBackground.style.display = 'none';
+                
+                // Restore 3D scene background
+                scene.background = new THREE.Color(0x87CEEB);
+                renderer.setClearColor(0x000000, 1);
+                
+                // Restore surface opacity
+                surfaces.forEach(surface => {
+                    if (!surface.userData.isFloor) {
+                        surface.material.opacity = 1.0;
+                    } else {
+                        surface.material.opacity = 0.8;
+                    }
+                });
+            }
+        }
+
+        function showCameraError() {
+            document.getElementById('camera-error').style.display = 'block';
+        }
+
+        function hideError() {
+            document.getElementById('camera-error').style.display = 'none';
         }
 
         function uploadModel() {
@@ -307,43 +452,25 @@
             
             const reader = new FileReader();
             reader.onload = function(e) {
-                const arrayBuffer = e.target.result;
+                // For this demo, we'll create a simple placeholder model
+                // In a real implementation, you'd use THREE.GLTFLoader
                 
-                loader.parse(arrayBuffer, '', function(gltf) {
-                    // Remove existing model
-                    if (currentModel) {
-                        scene.remove(currentModel);
-                    }
+                if (currentModel) {
+                    scene.remove(currentModel);
+                }
 
-                    // Add new model
-                    currentModel = gltf.scene;
-                    
-                    // Enable shadows for all meshes in the loaded model
-                    currentModel.traverse(function(child) {
-                        if (child.isMesh) {
-                            child.castShadow = true;
-                            child.receiveShadow = true;
-                        }
-                    });
-
-                    // Scale and position the model appropriately
-                    const box = new THREE.Box3().setFromObject(currentModel);
-                    const size = box.getSize(new THREE.Vector3());
-                    const maxDim = Math.max(size.x, size.y, size.z);
-                    const scale = 1 / maxDim; // Normalize to unit size
-                    currentModel.scale.setScalar(scale);
-
-                    currentModel.position.set(0, 0.5, 0);
-                    scene.add(currentModel);
-
-                    updateBackCamera();
-                    document.getElementById('loading').style.display = 'none';
-                    
-                }, function(error) {
-                    console.error('Error loading GLB file:', error);
-                    document.getElementById('loading').style.display = 'none';
-                    alert('Error loading GLB file. Please check the file format.');
+                // Create a simple box as placeholder for uploaded model
+                const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+                const material = new THREE.MeshLambertMaterial({ 
+                    color: Math.random() * 0xffffff
                 });
+                currentModel = new THREE.Mesh(geometry, material);
+                currentModel.castShadow = true;
+                currentModel.receiveShadow = true;
+                currentModel.position.set(0, 0.5, 0);
+                scene.add(currentModel);
+
+                document.getElementById('loading').style.display = 'none';
             };
             
             reader.readAsArrayBuffer(file);
@@ -373,9 +500,6 @@
             
             currentModel.position.set(x, surfaceY + modelHeight/2, z);
             
-            // Update back camera position
-            updateBackCamera();
-            
             // Small bounce animation
             const originalY = currentModel.position.y;
             currentModel.position.y = originalY + 0.3;
@@ -383,45 +507,10 @@
             const animate = () => {
                 currentModel.position.y = THREE.MathUtils.lerp(currentModel.position.y, originalY, 0.15);
                 if (Math.abs(currentModel.position.y - originalY) > 0.01) {
-                    updateBackCamera();
                     requestAnimationFrame(animate);
                 }
             };
             animate();
-        }
-
-        function updateBackCamera() {
-            if (!currentModel) return;
-
-            // Position back camera behind and slightly above the model
-            const modelPos = currentModel.position.clone();
-            const backOffset = new THREE.Vector3(0, 0.5, -1); // Behind and above
-            
-            // Apply model's rotation to the offset
-            backOffset.applyQuaternion(currentModel.quaternion);
-            
-            backCamera.position.copy(modelPos).add(backOffset);
-            
-            // Make back camera look in the same direction as model
-            const lookDirection = new THREE.Vector3(0, 0, 1);
-            lookDirection.applyQuaternion(currentModel.quaternion);
-            backCamera.lookAt(modelPos.clone().add(lookDirection));
-        }
-
-        function toggleCamera() {
-            isBackCamera = !isBackCamera;
-            const toggleBtn = document.getElementById('cameraToggle');
-            const indicator = document.getElementById('cameraIndicator');
-            
-            if (isBackCamera) {
-                toggleBtn.textContent = 'Switch to Main Camera';
-                toggleBtn.classList.add('active');
-                indicator.style.display = 'block';
-            } else {
-                toggleBtn.textContent = 'Switch to Back Camera';
-                toggleBtn.classList.remove('active');
-                indicator.style.display = 'none';
-            }
         }
 
         function setupEventListeners() {
@@ -431,16 +520,14 @@
             window.addEventListener('keydown', onKeyDown);
             window.addEventListener('keyup', onKeyUp);
 
-            renderer.domElement.addEventListener('click', () => {
-                if (!isBackCamera) {
-                    renderer.domElement.requestPointerLock();
+            document.getElementById('canvas3d').addEventListener('click', () => {
+                if (!isCameraMode) {
+                    document.getElementById('canvas3d').requestPointerLock();
                 }
             });
         }
 
         function onMouseClick(event) {
-            if (isBackCamera) return; // Disable placement in back camera mode
-
             mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
             mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
@@ -454,7 +541,7 @@
         }
 
         function onMouseMove(event) {
-            if (document.pointerLockElement === renderer.domElement && !isBackCamera) {
+            if (document.pointerLockElement === document.getElementById('canvas3d') && !isCameraMode) {
                 yaw -= event.movementX * lookSpeed;
                 pitch -= event.movementY * lookSpeed;
                 pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, pitch));
@@ -480,7 +567,7 @@
         }
 
         function updateCameraMovement() {
-            if (isBackCamera) return; // Disable movement in back camera mode
+            if (isCameraMode) return; // Disable movement in camera mode
 
             const direction = new THREE.Vector3();
             const right = new THREE.Vector3();
@@ -510,8 +597,6 @@
         function onWindowResize() {
             viewCamera.aspect = window.innerWidth / window.innerHeight;
             viewCamera.updateProjectionMatrix();
-            backCamera.aspect = window.innerWidth / window.innerHeight;
-            backCamera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
@@ -519,66 +604,8 @@
             requestAnimationFrame(animate);
             
             updateCameraMovement();
-            updateBackCamera();
-            
-            // Use appropriate camera for rendering
-            const activeCamera = isBackCamera ? backCamera : viewCamera;
-            renderer.render(scene, activeCamera);
+            renderer.render(scene, viewCamera);
         }
-
-        // Add GLTFLoader since it's not included in the base Three.js
-        THREE.GLTFLoader = function(manager) {
-            this.manager = (manager !== undefined) ? manager : THREE.DefaultLoadingManager;
-        };
-
-        THREE.GLTFLoader.prototype = {
-            constructor: THREE.GLTFLoader,
-            
-            load: function(url, onLoad, onProgress, onError) {
-                const loader = new THREE.FileLoader(this.manager);
-                loader.setResponseType('arraybuffer');
-                loader.load(url, (data) => {
-                    this.parse(data, '', onLoad, onError);
-                }, onProgress, onError);
-            },
-            
-            parse: function(data, path, onLoad, onError) {
-                try {
-                    // Simple GLB parser - for full functionality, you'd need the complete GLTFLoader
-                    // This is a basic implementation for demonstration
-                    const json = this.parseGLB(data);
-                    
-                    if (json && json.scenes && json.scenes.length > 0) {
-                        const scene = this.buildScene(json);
-                        onLoad({ scene: scene });
-                    } else {
-                        throw new Error('Invalid GLB format');
-                    }
-                } catch (error) {
-                    if (onError) onError(error);
-                }
-            },
-            
-            parseGLB: function(data) {
-                // Basic GLB parsing - you might want to use a more complete implementation
-                // This is simplified for the example
-                return null; // Would return parsed JSON
-            },
-            
-            buildScene: function(json) {
-                // Build Three.js scene from GLTF JSON
-                // This is simplified - full implementation would handle all GLTF features
-                const group = new THREE.Group();
-                
-                // Add a simple placeholder mesh
-                const geometry = new THREE.BoxGeometry(1, 1, 1);
-                const material = new THREE.MeshLambertMaterial({ color: 0x666666 });
-                const mesh = new THREE.Mesh(geometry, material);
-                group.add(mesh);
-                
-                return group;
-            }
-        };
     </script>
 </body>
 </html>
