@@ -3,458 +3,582 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AR Surface Tracking</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <title>3D Model Upload with Camera Control</title>
     <style>
         body {
             margin: 0;
             padding: 0;
             overflow: hidden;
-            font-family: Arial, sans-serif;
             background: #000;
+            font-family: Arial, sans-serif;
         }
-        
         #container {
             position: relative;
             width: 100vw;
             height: 100vh;
         }
-        
-        #video {
+        #info {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            z-index: 1;
-        }
-        
-        #canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 2;
-            pointer-events: auto;
-        }
-        
-        #ui {
-            position: absolute;
-            top: 20px;
-            left: 20px;
-            z-index: 3;
+            top: 10px;
+            left: 10px;
             color: white;
-            background: rgba(0,0,0,0.7);
+            background: rgba(0,0,0,0.8);
             padding: 15px;
-            border-radius: 10px;
+            border-radius: 8px;
+            z-index: 100;
             font-size: 14px;
+            max-width: 300px;
         }
-        
-        #fileInput {
+        #controls {
             position: absolute;
             bottom: 20px;
             left: 20px;
-            z-index: 3;
-            background: rgba(255,255,255,0.9);
-            padding: 10px;
-            border-radius: 5px;
-            border: none;
-            cursor: pointer;
+            color: white;
+            background: rgba(0,0,0,0.8);
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 100;
         }
-        
-        .tap-indicator {
+        #upload-section {
             position: absolute;
-            width: 60px;
-            height: 60px;
-            border: 3px solid rgba(255, 255, 255, 0.8);
-            border-radius: 50%;
-            pointer-events: none;
-            z-index: 4;
-            animation: tapRipple 0.6s ease-out;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.8);
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 100;
         }
-        
-        @keyframes tapRipple {
-            0% {
-                transform: scale(0.5);
-                opacity: 1;
-            }
-            100% {
-                transform: scale(2);
-                opacity: 0;
-            }
+        button {
+            margin: 5px;
+            padding: 8px 12px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button.active {
+            background: #ff6b6b;
+        }
+        input[type="file"] {
+            margin: 5px 0;
+            color: white;
+            background: #333;
+            padding: 5px;
+            border: 1px solid #666;
+            border-radius: 4px;
+        }
+        .camera-indicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 24px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            display: none;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 18px;
+            display: none;
         }
     </style>
 </head>
 <body>
     <div id="container">
-        <video id="video" autoplay playsinline muted></video>
-        <canvas id="canvas"></canvas>
-        
-        <div id="ui">
-            <div>AR Surface Tracking</div>
-            <div id="status">Initializing camera...</div>
-            <div style="margin-top: 10px; font-size: 12px;">
-                • Upload a 3D model below<br>
-                • Tap screen to place model<br>
-                • Model stays anchored to surface
-            </div>
+        <div id="info">
+            <strong>3D Model Surface Detection</strong><br>
+            • Upload GLB file to replace default model<br>
+            • Click to place model on surfaces<br>
+            • WASD: Move view camera<br>
+            • Mouse: Look around<br>
+            • Back Camera: View from model's perspective
         </div>
         
-        <input type="file" id="fileInput" accept=".obj,.gltf,.glb" title="Upload 3D Model">
+        <div id="upload-section">
+            <input type="file" id="fileInput" accept=".glb,.gltf" />
+            <button onclick="uploadModel()">Upload GLB Model</button>
+        </div>
+
+        <div id="controls">
+            <button onclick="resetModel()">Reset Position</button>
+            <button onclick="toggleWireframe()">Toggle Wireframe</button>
+            <button id="cameraToggle" onclick="toggleCamera()">Switch to Back Camera</button>
+        </div>
+
+        <div class="camera-indicator" id="cameraIndicator">📹 BACK CAMERA VIEW</div>
+        <div id="loading">Loading model...</div>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
-        class ARSurfaceTracker {
-            constructor() {
-                this.video = document.getElementById('video');
-                this.canvas = document.getElementById('canvas');
-                this.ctx = this.canvas.getContext('2d');
-                this.status = document.getElementById('status');
-                this.fileInput = document.getElementById('fileInput');
-                
-                // Three.js setup
-                this.scene = new THREE.Scene();
-                this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-                this.renderer = new THREE.WebGLRenderer({ 
-                    canvas: this.canvas, 
-                    alpha: true,
-                    antialias: true 
-                });
-                
-                this.renderer.setSize(window.innerWidth, window.innerHeight);
-                this.renderer.setClearColor(0x000000, 0);
-                this.renderer.shadowMap.enabled = true;
-                this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-                
-                // AR tracking variables
-                this.isTracking = false;
-                this.placedModels = [];
-                this.currentModel = null;
-                this.surfacePoints = [];
-                this.floorLevel = 0;
-                
-                // Camera calibration (estimated values for mobile)
-                this.cameraMatrix = {
-                    fx: 800, fy: 800,
-                    cx: 320, cy: 240
-                };
-                
-                this.init();
+        let scene, viewCamera, backCamera, renderer, raycaster, mouse;
+        let currentModel, surfaces = [];
+        let wireframeMode = false;
+        let isBackCamera = false;
+        let loader;
+
+        // Camera movement
+        const moveSpeed = 0.1;
+        const lookSpeed = 0.002;
+        let pitch = 0, yaw = 0;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+
+        init();
+        animate();
+
+        function init() {
+            // Scene setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+
+            // Main view camera
+            viewCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            viewCamera.position.set(0, 5, 10);
+
+            // Back camera (will be positioned relative to model)
+            backCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+            // Renderer setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.getElementById('container').appendChild(renderer.domElement);
+
+            // GLB Loader
+            loader = new THREE.GLTFLoader();
+
+            // Lighting
+            setupLighting();
+
+            // Create surfaces for detection
+            createSurfaces();
+
+            // Create default camera model
+            createDefaultModel();
+
+            // Raycasting setup
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+
+            // Event listeners
+            setupEventListeners();
+        }
+
+        function setupLighting() {
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(10, 10, 5);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            directionalLight.shadow.camera.near = 0.1;
+            directionalLight.shadow.camera.far = 50;
+            directionalLight.shadow.camera.left = -20;
+            directionalLight.shadow.camera.right = 20;
+            directionalLight.shadow.camera.top = 20;
+            directionalLight.shadow.camera.bottom = -20;
+            scene.add(directionalLight);
+
+            // Additional lighting for better GLB model visibility
+            const pointLight = new THREE.PointLight(0xffffff, 0.5);
+            pointLight.position.set(5, 5, 5);
+            scene.add(pointLight);
+        }
+
+        function createSurfaces() {
+            // Floor
+            const floorGeometry = new THREE.PlaneGeometry(30, 30);
+            const floorMaterial = new THREE.MeshLambertMaterial({ 
+                color: 0x90EE90,
+                transparent: true,
+                opacity: 0.8
+            });
+            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+            surfaces.push(floor);
+
+            // Various platforms and surfaces
+            createPlatforms();
+        }
+
+        function createPlatforms() {
+            // Elevated platform
+            const platformGeometry = new THREE.BoxGeometry(6, 0.3, 6);
+            const platformMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+            const platform = new THREE.Mesh(platformGeometry, platformMaterial);
+            platform.position.set(5, 1.15, 0);
+            platform.castShadow = true;
+            platform.receiveShadow = true;
+            scene.add(platform);
+            surfaces.push(platform);
+
+            // Ramp
+            const rampGeometry = new THREE.BoxGeometry(3, 0.2, 8);
+            const rampMaterial = new THREE.MeshLambertMaterial({ color: 0x696969 });
+            const ramp = new THREE.Mesh(rampGeometry, rampMaterial);
+            ramp.position.set(-5, 0.8, 0);
+            ramp.rotation.z = Math.PI / 10;
+            ramp.castShadow = true;
+            ramp.receiveShadow = true;
+            scene.add(ramp);
+            surfaces.push(ramp);
+
+            // Stairs
+            for (let i = 0; i < 6; i++) {
+                const stepGeometry = new THREE.BoxGeometry(3, 0.3, 1.5);
+                const stepMaterial = new THREE.MeshLambertMaterial({ color: 0x708090 });
+                const step = new THREE.Mesh(stepGeometry, stepMaterial);
+                step.position.set(-10, i * 0.3 + 0.15, i * 1.2 - 3);
+                step.castShadow = true;
+                step.receiveShadow = true;
+                scene.add(step);
+                surfaces.push(step);
             }
+
+            // Circular platform
+            const circleGeometry = new THREE.CylinderGeometry(2, 2, 0.2);
+            const circleMaterial = new THREE.MeshLambertMaterial({ color: 0x8A2BE2 });
+            const circle = new THREE.Mesh(circleGeometry, circleMaterial);
+            circle.position.set(0, 0.1, -8);
+            circle.castShadow = true;
+            circle.receiveShadow = true;
+            scene.add(circle);
+            surfaces.push(circle);
+        }
+
+        function createDefaultModel() {
+            const modelGroup = new THREE.Group();
+
+            // Camera body
+            const bodyGeometry = new THREE.BoxGeometry(0.4, 0.25, 0.5);
+            const bodyMaterial = new THREE.MeshLambertMaterial({ color: 0x333333 });
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            body.castShadow = true;
+            modelGroup.add(body);
+
+            // Camera lens
+            const lensGeometry = new THREE.CylinderGeometry(0.1, 0.1, 0.2);
+            const lensMaterial = new THREE.MeshLambertMaterial({ color: 0x111111 });
+            const lens = new THREE.Mesh(lensGeometry, lensMaterial);
+            lens.rotation.z = Math.PI / 2;
+            lens.position.set(0, 0, 0.3);
+            lens.castShadow = true;
+            modelGroup.add(lens);
+
+            // Back camera indicator (small red dot)
+            const backCamGeometry = new THREE.SphereGeometry(0.03);
+            const backCamMaterial = new THREE.MeshLambertMaterial({ color: 0xff0000 });
+            const backCamIndicator = new THREE.Mesh(backCamGeometry, backCamMaterial);
+            backCamIndicator.position.set(0, 0.15, -0.25);
+            modelGroup.add(backCamIndicator);
+
+            currentModel = modelGroup;
+            currentModel.position.set(0, 0.5, 0);
+            scene.add(currentModel);
+
+            updateBackCamera();
+        }
+
+        function uploadModel() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
             
-            async init() {
-                try {
-                    await this.setupCamera();
-                    this.setupLighting();
-                    this.createDefaultModel();
-                    this.setupEventListeners();
-                    this.startTracking();
-                    this.status.textContent = 'Ready - Tap to place model';
-                } catch (error) {
-                    console.error('Initialization error:', error);
-                    this.status.textContent = 'Error: ' + error.message;
-                }
+            if (!file) {
+                alert('Please select a GLB file first');
+                return;
             }
+
+            document.getElementById('loading').style.display = 'block';
             
-            async setupCamera() {
-                const constraints = {
-                    video: {
-                        facingMode: { exact: 'environment' },
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const arrayBuffer = e.target.result;
+                
+                loader.parse(arrayBuffer, '', function(gltf) {
+                    // Remove existing model
+                    if (currentModel) {
+                        scene.remove(currentModel);
                     }
-                };
-                
-                try {
-                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
-                    this.video.srcObject = stream;
+
+                    // Add new model
+                    currentModel = gltf.scene;
                     
-                    return new Promise((resolve) => {
-                        this.video.onloadedmetadata = () => {
-                            this.video.play();
-                            resolve();
-                        };
+                    // Enable shadows for all meshes in the loaded model
+                    currentModel.traverse(function(child) {
+                        if (child.isMesh) {
+                            child.castShadow = true;
+                            child.receiveShadow = true;
+                        }
                     });
-                } catch (error) {
-                    // Fallback to any available camera
-                    const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
-                    this.video.srcObject = fallbackStream;
+
+                    // Scale and position the model appropriately
+                    const box = new THREE.Box3().setFromObject(currentModel);
+                    const size = box.getSize(new THREE.Vector3());
+                    const maxDim = Math.max(size.x, size.y, size.z);
+                    const scale = 1 / maxDim; // Normalize to unit size
+                    currentModel.scale.setScalar(scale);
+
+                    currentModel.position.set(0, 0.5, 0);
+                    scene.add(currentModel);
+
+                    updateBackCamera();
+                    document.getElementById('loading').style.display = 'none';
                     
-                    return new Promise((resolve) => {
-                        this.video.onloadedmetadata = () => {
-                            this.video.play();
-                            resolve();
-                        };
-                    });
-                }
-            }
-            
-            setupLighting() {
-                // Ambient light
-                const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
-                this.scene.add(ambientLight);
-                
-                // Directional light (sun simulation)
-                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-                directionalLight.position.set(5, 10, 5);
-                directionalLight.castShadow = true;
-                directionalLight.shadow.mapSize.width = 2048;
-                directionalLight.shadow.mapSize.height = 2048;
-                this.scene.add(directionalLight);
-                
-                // Point light for better illumination
-                const pointLight = new THREE.PointLight(0xffffff, 0.4, 100);
-                pointLight.position.set(0, 5, 0);
-                this.scene.add(pointLight);
-            }
-            
-            createDefaultModel() {
-                // Create a default 3D model (a colorful cube with some detail)
-                const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
-                const materials = [
-                    new THREE.MeshLambertMaterial({ color: 0xff0000 }), // Right
-                    new THREE.MeshLambertMaterial({ color: 0x00ff00 }), // Left
-                    new THREE.MeshLambertMaterial({ color: 0x0000ff }), // Top
-                    new THREE.MeshLambertMaterial({ color: 0xffff00 }), // Bottom
-                    new THREE.MeshLambertMaterial({ color: 0xff00ff }), // Front
-                    new THREE.MeshLambertMaterial({ color: 0x00ffff })  // Back
-                ];
-                
-                this.currentModel = new THREE.Mesh(geometry, materials);
-                this.currentModel.castShadow = true;
-                this.currentModel.receiveShadow = true;
-                
-                // Add some animation
-                this.currentModel.userData = {
-                    originalY: 0,
-                    time: 0,
-                    placed: false
-                };
-            }
-            
-            setupEventListeners() {
-                // Handle screen taps
-                this.canvas.addEventListener('click', (e) => this.handleTap(e));
-                this.canvas.addEventListener('touchstart', (e) => {
-                    e.preventDefault();
-                    this.handleTap(e.touches[0]);
+                }, function(error) {
+                    console.error('Error loading GLB file:', error);
+                    document.getElementById('loading').style.display = 'none';
+                    alert('Error loading GLB file. Please check the file format.');
                 });
-                
-                // Handle window resize
-                window.addEventListener('resize', () => this.handleResize());
-                
-                // Handle file upload
-                this.fileInput.addEventListener('change', (e) => this.handleFileUpload(e));
-                
-                // Prevent default touch behaviors
-                document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
-            }
+            };
             
-            handleTap(event) {
-                const rect = this.canvas.getBoundingClientRect();
-                const x = event.clientX - rect.left;
-                const y = event.clientY - rect.top;
-                
-                // Show tap indicator
-                this.showTapIndicator(x, y);
-                
-                // Simulate surface detection at tap point
-                const surfacePoint = this.detectSurface(x, y);
-                if (surfacePoint && this.currentModel) {
-                    this.placeModel(surfacePoint);
+            reader.readAsArrayBuffer(file);
+        }
+
+        function detectSurface(x, z) {
+            const rayOrigin = new THREE.Vector3(x, 20, z);
+            const rayDirection = new THREE.Vector3(0, -1, 0);
+            raycaster.set(rayOrigin, rayDirection);
+
+            const intersects = raycaster.intersectObjects(surfaces);
+            
+            if (intersects.length > 0) {
+                return intersects[0].point.y;
+            }
+            return 0;
+        }
+
+        function placeModel(x, z) {
+            if (!currentModel) return;
+
+            const surfaceY = detectSurface(x, z);
+            
+            // Get model's bounding box to position it correctly on surface
+            const box = new THREE.Box3().setFromObject(currentModel);
+            const modelHeight = box.max.y - box.min.y;
+            
+            currentModel.position.set(x, surfaceY + modelHeight/2, z);
+            
+            // Update back camera position
+            updateBackCamera();
+            
+            // Small bounce animation
+            const originalY = currentModel.position.y;
+            currentModel.position.y = originalY + 0.3;
+            
+            const animate = () => {
+                currentModel.position.y = THREE.MathUtils.lerp(currentModel.position.y, originalY, 0.15);
+                if (Math.abs(currentModel.position.y - originalY) > 0.01) {
+                    updateBackCamera();
+                    requestAnimationFrame(animate);
                 }
-            }
+            };
+            animate();
+        }
+
+        function updateBackCamera() {
+            if (!currentModel) return;
+
+            // Position back camera behind and slightly above the model
+            const modelPos = currentModel.position.clone();
+            const backOffset = new THREE.Vector3(0, 0.5, -1); // Behind and above
             
-            showTapIndicator(x, y) {
-                const indicator = document.createElement('div');
-                indicator.className = 'tap-indicator';
-                indicator.style.left = (x - 30) + 'px';
-                indicator.style.top = (y - 30) + 'px';
-                document.body.appendChild(indicator);
-                
-                setTimeout(() => {
-                    document.body.removeChild(indicator);
-                }, 600);
-            }
+            // Apply model's rotation to the offset
+            backOffset.applyQuaternion(currentModel.quaternion);
             
-            detectSurface(screenX, screenY) {
-                // Simulate surface detection using simple heuristics
-                // In a real AR system, this would use computer vision algorithms
-                
-                const centerX = window.innerWidth / 2;
-                const centerY = window.innerHeight / 2;
-                
-                // Calculate distance from center (simulating depth)
-                const distanceFromCenter = Math.sqrt(
-                    Math.pow(screenX - centerX, 2) + Math.pow(screenY - centerY, 2)
-                );
-                
-                // Simulate depth based on screen position
-                const maxDistance = Math.sqrt(centerX * centerX + centerY * centerY);
-                const normalizedDistance = distanceFromCenter / maxDistance;
-                const depth = 2 + normalizedDistance * 3; // 2-5 units away
-                
-                // Convert screen coordinates to world coordinates
-                const worldX = (screenX - centerX) * depth * 0.002;
-                const worldZ = -depth;
-                const worldY = this.floorLevel; // Place on detected floor
-                
-                return new THREE.Vector3(worldX, worldY, worldZ);
-            }
+            backCamera.position.copy(modelPos).add(backOffset);
             
-            placeModel(position) {
-                if (!this.currentModel) return;
-                
-                // Clone the current model for placement
-                const placedModel = this.currentModel.clone();
-                placedModel.position.copy(position);
-                placedModel.userData = {
-                    originalY: position.y,
-                    time: 0,
-                    placed: true,
-                    id: Date.now()
-                };
-                
-                // Add slight random rotation for variety
-                placedModel.rotation.y = Math.random() * Math.PI * 2;
-                
-                this.scene.add(placedModel);
-                this.placedModels.push(placedModel);
-                
-                this.status.textContent = `Placed model ${this.placedModels.length} - Tap again to place more`;
-                
-                // Limit number of placed models to prevent performance issues
-                if (this.placedModels.length > 10) {
-                    const oldModel = this.placedModels.shift();
-                    this.scene.remove(oldModel);
-                }
-            }
+            // Make back camera look in the same direction as model
+            const lookDirection = new THREE.Vector3(0, 0, 1);
+            lookDirection.applyQuaternion(currentModel.quaternion);
+            backCamera.lookAt(modelPos.clone().add(lookDirection));
+        }
+
+        function toggleCamera() {
+            isBackCamera = !isBackCamera;
+            const toggleBtn = document.getElementById('cameraToggle');
+            const indicator = document.getElementById('cameraIndicator');
             
-            async handleFileUpload(event) {
-                const file = event.target.files[0];
-                if (!file) return;
-                
-                this.status.textContent = 'Loading 3D model...';
-                
-                try {
-                    // For this demo, we'll create a more complex default model
-                    // In a real implementation, you'd use a proper 3D model loader
-                    this.createCustomModel(file.name);
-                    this.status.textContent = `Loaded ${file.name} - Tap to place`;
-                } catch (error) {
-                    console.error('Model loading error:', error);
-                    this.status.textContent = 'Error loading model';
-                }
-            }
-            
-            createCustomModel(fileName) {
-                // Create a more complex model based on file name
-                const group = new THREE.Group();
-                
-                // Base
-                const baseGeometry = new THREE.CylinderGeometry(0.3, 0.4, 0.1, 8);
-                const baseMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
-                const base = new THREE.Mesh(baseGeometry, baseMaterial);
-                base.position.y = -0.2;
-                group.add(base);
-                
-                // Main body
-                const bodyGeometry = new THREE.BoxGeometry(0.4, 0.6, 0.4);
-                const bodyMaterial = new THREE.MeshLambertMaterial({ color: 0x4169E1 });
-                const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-                group.add(body);
-                
-                // Top
-                const topGeometry = new THREE.SphereGeometry(0.2, 8, 6);
-                const topMaterial = new THREE.MeshLambertMaterial({ color: 0xFF6347 });
-                const top = new THREE.Mesh(topGeometry, topMaterial);
-                top.position.y = 0.4;
-                group.add(top);
-                
-                group.castShadow = true;
-                group.receiveShadow = true;
-                
-                // Remove old model
-                if (this.currentModel) {
-                    this.scene.remove(this.currentModel);
-                }
-                
-                this.currentModel = group;
-                this.currentModel.userData = {
-                    originalY: 0,
-                    time: 0,
-                    placed: false
-                };
-            }
-            
-            startTracking() {
-                this.isTracking = true;
-                this.animate();
-            }
-            
-            animate() {
-                if (!this.isTracking) return;
-                
-                requestAnimationFrame(() => this.animate());
-                
-                // Animate placed models
-                this.placedModels.forEach(model => {
-                    if (model.userData.placed) {
-                        model.userData.time += 0.016; // ~60fps
-                        
-                        // Subtle floating animation
-                        const floatOffset = Math.sin(model.userData.time * 2) * 0.02;
-                        model.position.y = model.userData.originalY + floatOffset;
-                        
-                        // Gentle rotation
-                        model.rotation.y += 0.005;
-                    }
-                });
-                
-                // Update camera (simulate AR tracking)
-                this.updateARCamera();
-                
-                // Render the scene
-                this.renderer.render(this.scene, this.camera);
-            }
-            
-            updateARCamera() {
-                // Simulate slight camera movement/stabilization
-                // In a real AR system, this would be updated by tracking algorithms
-                
-                const time = Date.now() * 0.001;
-                
-                // Subtle camera shake simulation
-                this.camera.position.x = Math.sin(time * 0.5) * 0.01;
-                this.camera.position.y = Math.cos(time * 0.3) * 0.01;
-                this.camera.position.z = 0;
-                
-                this.camera.lookAt(0, 0, -3);
-            }
-            
-            handleResize() {
-                const width = window.innerWidth;
-                const height = window.innerHeight;
-                
-                this.camera.aspect = width / height;
-                this.camera.updateProjectionMatrix();
-                this.renderer.setSize(width, height);
+            if (isBackCamera) {
+                toggleBtn.textContent = 'Switch to Main Camera';
+                toggleBtn.classList.add('active');
+                indicator.style.display = 'block';
+            } else {
+                toggleBtn.textContent = 'Switch to Back Camera';
+                toggleBtn.classList.remove('active');
+                indicator.style.display = 'none';
             }
         }
-        
-        // Initialize AR tracking when page loads
-        window.addEventListener('load', () => {
-            new ARSurfaceTracker();
-        });
-        
-        // Handle device orientation changes
-        window.addEventListener('orientationchange', () => {
-            setTimeout(() => {
-                window.location.reload();
-            }, 500);
-        });
+
+        function setupEventListeners() {
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('click', onMouseClick);
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('keydown', onKeyDown);
+            window.addEventListener('keyup', onKeyUp);
+
+            renderer.domElement.addEventListener('click', () => {
+                if (!isBackCamera) {
+                    renderer.domElement.requestPointerLock();
+                }
+            });
+        }
+
+        function onMouseClick(event) {
+            if (isBackCamera) return; // Disable placement in back camera mode
+
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, viewCamera);
+            const intersects = raycaster.intersectObjects(surfaces);
+
+            if (intersects.length > 0) {
+                const point = intersects[0].point;
+                placeModel(point.x, point.z);
+            }
+        }
+
+        function onMouseMove(event) {
+            if (document.pointerLockElement === renderer.domElement && !isBackCamera) {
+                yaw -= event.movementX * lookSpeed;
+                pitch -= event.movementY * lookSpeed;
+                pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, pitch));
+            }
+        }
+
+        function onKeyDown(event) {
+            switch(event.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyD': moveRight = true; break;
+            }
+        }
+
+        function onKeyUp(event) {
+            switch(event.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyD': moveRight = false; break;
+            }
+        }
+
+        function updateCameraMovement() {
+            if (isBackCamera) return; // Disable movement in back camera mode
+
+            const direction = new THREE.Vector3();
+            const right = new THREE.Vector3();
+
+            viewCamera.getWorldDirection(direction);
+            right.crossVectors(direction, viewCamera.up);
+
+            if (moveForward) viewCamera.position.addScaledVector(direction, moveSpeed);
+            if (moveBackward) viewCamera.position.addScaledVector(direction, -moveSpeed);
+            if (moveLeft) viewCamera.position.addScaledVector(right, -moveSpeed);
+            if (moveRight) viewCamera.position.addScaledVector(right, moveSpeed);
+
+            viewCamera.rotation.set(pitch, yaw, 0);
+        }
+
+        function resetModel() {
+            placeModel(0, 0);
+        }
+
+        function toggleWireframe() {
+            wireframeMode = !wireframeMode;
+            surfaces.forEach(surface => {
+                surface.material.wireframe = wireframeMode;
+            });
+        }
+
+        function onWindowResize() {
+            viewCamera.aspect = window.innerWidth / window.innerHeight;
+            viewCamera.updateProjectionMatrix();
+            backCamera.aspect = window.innerWidth / window.innerHeight;
+            backCamera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            updateCameraMovement();
+            updateBackCamera();
+            
+            // Use appropriate camera for rendering
+            const activeCamera = isBackCamera ? backCamera : viewCamera;
+            renderer.render(scene, activeCamera);
+        }
+
+        // Add GLTFLoader since it's not included in the base Three.js
+        THREE.GLTFLoader = function(manager) {
+            this.manager = (manager !== undefined) ? manager : THREE.DefaultLoadingManager;
+        };
+
+        THREE.GLTFLoader.prototype = {
+            constructor: THREE.GLTFLoader,
+            
+            load: function(url, onLoad, onProgress, onError) {
+                const loader = new THREE.FileLoader(this.manager);
+                loader.setResponseType('arraybuffer');
+                loader.load(url, (data) => {
+                    this.parse(data, '', onLoad, onError);
+                }, onProgress, onError);
+            },
+            
+            parse: function(data, path, onLoad, onError) {
+                try {
+                    // Simple GLB parser - for full functionality, you'd need the complete GLTFLoader
+                    // This is a basic implementation for demonstration
+                    const json = this.parseGLB(data);
+                    
+                    if (json && json.scenes && json.scenes.length > 0) {
+                        const scene = this.buildScene(json);
+                        onLoad({ scene: scene });
+                    } else {
+                        throw new Error('Invalid GLB format');
+                    }
+                } catch (error) {
+                    if (onError) onError(error);
+                }
+            },
+            
+            parseGLB: function(data) {
+                // Basic GLB parsing - you might want to use a more complete implementation
+                // This is simplified for the example
+                return null; // Would return parsed JSON
+            },
+            
+            buildScene: function(json) {
+                // Build Three.js scene from GLTF JSON
+                // This is simplified - full implementation would handle all GLTF features
+                const group = new THREE.Group();
+                
+                // Add a simple placeholder mesh
+                const geometry = new THREE.BoxGeometry(1, 1, 1);
+                const material = new THREE.MeshLambertMaterial({ color: 0x666666 });
+                const mesh = new THREE.Mesh(geometry, material);
+                group.add(mesh);
+                
+                return group;
+            }
+        };
     </script>
 </body>
 </html>
